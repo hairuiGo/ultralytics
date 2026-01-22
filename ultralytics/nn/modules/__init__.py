@@ -17,6 +17,25 @@ Examples:
     >>> subprocess.run(f"onnxslim {f} {f} && open {f}", shell=True, check=True)  # pip install onnxslim
 """
 
+from .fire_smoke import(
+    CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
+    BiFPN_Concat, BiFPN, BiFPN_Transformer,
+    ASLI_BiFPN,
+)
+from .EMA import EMA
+
+from .SimAM import SimAM
+
+from .ShuffleAttention import ShuffleAttention
+
+from .TripletAttention import TripletAttention
+
+from .MHSA import MHSA
+
+from .CBAM import CBAM
+
+from .ECA import ECA
+
 from .block import (
     C1,
     C2,
@@ -187,4 +206,8 @@ __all__ = (
     "YOLOESegment",
     "YOLOESegment26",
     "v10Detect",
+    "CoordAtt","BiFPN_Concat3","BiFPN_Concat2","HSFPN",
+    "EMA", "SimAM", "ShuffleAttention", "TripletAttention",
+    "MHSA", "CBAM", "ECA",
+    "ASLI_BiFPN",
 )

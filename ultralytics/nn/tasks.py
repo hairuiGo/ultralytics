@@ -72,7 +72,19 @@ from ultralytics.nn.modules import (
     YOLOESegment,
     YOLOESegment26,
     v10Detect,
+
+    CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
+    BiFPN_Concat, BiFPN, BiFPN_Transformer,
+    EMA, SimAM, CBAM, MHSA, TripletAttention, ECA, ShuffleAttention,
+    ASLI_BiFPN,
 )
+
+# from ultralytics.nn.modules.fire_smoke import (
+#     CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
+#     BiFPN_Concat, BiFPN, BiFPN_Transformer
+# )
+
+
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -1587,6 +1599,7 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            HSFPN,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1657,6 +1670,43 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        # 添加bifpn_concat结构
+        elif m in [BiFPN_Concat2, BiFPN_Concat3]:
+            c2 = sum(ch[x] for x in f)
+        elif m is BiFPN_Concat:
+            c2 = max(ch[x] for x in f)
+        elif m in {BiFPN, BiFPN_Transformer}:
+            length = len([ch[x] for x in f])
+            args = [length]
+        elif m in {MHSA, ShuffleAttention}:
+            args = [ch[f], *args]
+        elif m in {EMA}:
+            args = [ch[f]]
+        elif m in (SimAM, CBAM, TripletAttention, ECA):
+            c1, c2 = ch[f], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, divisor=8)
+            args = [c1, *args[1:]]
+        elif m is ASLI_BiFPN:
+            c2 = args[0]  # channels
+            # input channels diambil dari f
+            # buat layer
+            module = m(*args)
+            # eksekusi forward dummy untuk mengetahui output count
+            # tapi cukup tahu bahwa ini 3 output
+            # print(f"i={i}")
+            # print(f"c2:{c2}")
+            # print(f"ch:{ch}")
+            # ch[i] = c2  # untuk node pertama
+            if i >= len(ch):
+                ch.extend([0] * (i - len(ch) + 1))
+            ch[i] = c2
+            ch.append(c2)
+            ch.append(c2)
+            ch.append(c2)
+            # tandai module sebagai multi_output
+            module._multi_output = True
+            module._num_outputs = 3
         elif m in frozenset(
             {
                 Detect,
