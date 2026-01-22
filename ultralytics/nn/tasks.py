@@ -182,20 +182,68 @@ class BaseModel(torch.nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
+        # y, dt, embeddings = [], [], []  # outputs
+        # embed = frozenset(embed) if embed is not None else {-1}
+        # max_idx = max(embed)
+        # for m in self.model:
+        #     if m.f != -1:  # if not from previous layer
+        #         x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+        #     if profile:
+        #         self._profile_one_layer(m, x, dt)
+        #     x = m(x)  # run
+        #     y.append(x if m.i in self.save else None)  # save output
+        #     if visualize:
+        #         feature_visualization(x, m.type, m.i, save_dir=visualize)
+        #     if m.i in embed:
+        #         embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+        #         if m.i == max_idx:
+        #             return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        # return x
+
+        """Perform a forward pass through the network with multi-input & multi-output support."""
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
         for m in self.model:
-            if m.f != -1:  # if not from previous layer
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            # ----------- 1. 处理多输入 -----------
+            if m.f != -1:
+                if isinstance(m.f, int):
+                    x = y[m.f]
+                else:
+                    x = [x if j == -1 else y[j] for j in m.f]
+            # ----------- 2. profile -----------
             if profile:
                 self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
-            y.append(x if m.i in self.save else None)  # save output
+            # ----------- 3. forward -----------
+            x = m(x)
+            # ----------- 4. 处理多输出 -----------
+            if isinstance(x, (list, tuple)):
+                # 多输出：逐个 append 到 y
+                for xi in x:
+                    y.append(xi)
+            else:
+                # 单输出
+                y.append(x)
+            # ----------- 5. visualize -----------
             if visualize:
-                feature_visualization(x, m.type, m.i, save_dir=visualize)
+                if isinstance(x, (list, tuple)):
+                    for xi in x:
+                        feature_visualization(xi, m.type, m.i, save_dir=visualize)
+                else:
+                    feature_visualization(x, m.type, m.i, save_dir=visualize)
+            # ----------- 6. embed -----------
             if m.i in embed:
-                embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if isinstance(x, (list, tuple)):
+                    for xi in x:
+                        embeddings.append(
+                            torch.nn.functional.adaptive_avg_pool2d(xi, (1, 1))
+                            .squeeze(-1).squeeze(-1)
+                        )
+                else:
+                    embeddings.append(
+                        torch.nn.functional.adaptive_avg_pool2d(x, (1, 1))
+                        .squeeze(-1).squeeze(-1)
+                    )
                 if m.i == max_idx:
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         return x
@@ -1694,10 +1742,8 @@ def parse_model(d, ch, verbose=True):
             module = m(*args)
             # eksekusi forward dummy untuk mengetahui output count
             # tapi cukup tahu bahwa ini 3 output
-            # print(f"i={i}")
-            # print(f"c2:{c2}")
-            # print(f"ch:{ch}")
             # ch[i] = c2  # untuk node pertama
+            feature_start = len(ch)
             if i >= len(ch):
                 ch.extend([0] * (i - len(ch) + 1))
             ch[i] = c2
@@ -1707,6 +1753,8 @@ def parse_model(d, ch, verbose=True):
             # tandai module sebagai multi_output
             module._multi_output = True
             module._num_outputs = 3
+            feature_end = len(ch)
+            module._feature_range = (feature_start, feature_end)
         elif m in frozenset(
             {
                 Detect,
