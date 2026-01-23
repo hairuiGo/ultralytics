@@ -1730,7 +1730,7 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f], *args]
         elif m in {EMA}:
             args = [ch[f]]
-        elif m in (SimAM, CBAM, TripletAttention, ECA):
+        elif m in (SimAM, CBAM, TripletAttention, ECA, CoordAtt):
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, divisor=8)
@@ -1747,7 +1747,6 @@ def parse_model(d, ch, verbose=True):
             if i >= len(ch):
                 ch.extend([0] * (i - len(ch) + 1))
             ch[i] = c2
-            ch.append(c2)
             ch.append(c2)
             ch.append(c2)
             # tandai module sebagai multi_output
