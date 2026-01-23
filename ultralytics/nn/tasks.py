@@ -1736,24 +1736,33 @@ def parse_model(d, ch, verbose=True):
                 c2 = make_divisible(min(c2, max_channels) * width, divisor=8)
             args = [c1, *args[1:]]
         elif m is ASLI_BiFPN:
+            # c2 = args[0]  # channels
+            # module = m(*args)
+            # # eksekusi forward dummy untuk mengetahui output count
+            # # tapi cukup tahu bahwa ini 3 output
+            # # ch[i] = c2  # untuk node pertama
+            # feature_start = len(ch)
+            # if i >= len(ch):
+            #     ch.extend([0] * (i - len(ch) + 1))
+            # ch[i] = c2
+            # ch.append(c2)
+            # ch.append(c2)
+            # # tandai module sebagai multi_output
+            # module._multi_output = True
+            # module._num_outputs = 3
+            # feature_end = len(ch)
+            # module._feature_range = (feature_start, feature_end)
+
             c2 = args[0]  # channels
-            # input channels diambil dari f
-            # buat layer
-            module = m(*args)
-            # eksekusi forward dummy untuk mengetahui output count
-            # tapi cukup tahu bahwa ini 3 output
-            # ch[i] = c2  # untuk node pertama
-            feature_start = len(ch)
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, divisor=8)
+            args = [c2, *args[1:]]
+            # module = m(*args)
             if i >= len(ch):
                 ch.extend([0] * (i - len(ch) + 1))
             ch[i] = c2
             ch.append(c2)
             ch.append(c2)
-            # tandai module sebagai multi_output
-            module._multi_output = True
-            module._num_outputs = 3
-            feature_end = len(ch)
-            module._feature_range = (feature_start, feature_end)
         elif m in frozenset(
             {
                 Detect,
