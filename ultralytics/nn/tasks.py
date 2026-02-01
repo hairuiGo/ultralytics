@@ -76,7 +76,7 @@ from ultralytics.nn.modules import (
     CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
     BiFPN_Concat, BiFPN, BiFPN_Transformer,
     EMA, SimAM, CBAM, MHSA, TripletAttention, ECA, ShuffleAttention,
-    ASLI_BiFPN,
+    ASLI_BiFPN, DynamicBiFPN, FS_Conv, Hybrid_FS_Conv
 )
 
 # from ultralytics.nn.modules.fire_smoke import (
@@ -1648,6 +1648,8 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             A2C2f,
             HSFPN,
+            FS_Conv,
+            Hybrid_FS_Conv,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1735,7 +1737,7 @@ def parse_model(d, ch, verbose=True):
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, divisor=8)
             args = [c1, *args[1:]]
-        elif m is ASLI_BiFPN:
+        elif m in {ASLI_BiFPN, DynamicBiFPN}:
             # c2 = args[0]  # channels
             # module = m(*args)
             # # eksekusi forward dummy untuk mengetahui output count

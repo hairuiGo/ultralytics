@@ -20,7 +20,7 @@ Examples:
 from .fire_smoke import(
     CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
     BiFPN_Concat, BiFPN, BiFPN_Transformer,
-    ASLI_BiFPN,
+    ASLI_BiFPN, DynamicBiFPN, FS_Conv, Hybrid_FS_Conv,
 )
 from .EMA import EMA
 from .SimAM import SimAM
@@ -204,4 +204,5 @@ __all__ = (
     "EMA", "SimAM", "ShuffleAttention", "TripletAttention",
     "MHSA", "CBAM", "ECA",
     "ASLI_BiFPN",
+    "DynamicBiFPN", "FS_Conv", "Hybrid_FS_Conv"
 )
