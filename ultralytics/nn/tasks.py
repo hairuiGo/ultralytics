@@ -76,7 +76,8 @@ from ultralytics.nn.modules import (
     CoordAtt, BiFPN_Concat3, BiFPN_Concat2, HSFPN,
     BiFPN_Concat, BiFPN, BiFPN_Transformer,
     EMA, SimAM, CBAM, MHSA, TripletAttention, ECA, ShuffleAttention,
-    ASLI_BiFPN, DynamicBiFPN, FS_Conv, Hybrid_FS_Conv
+    ASLI_BiFPN, DynamicBiFPN, FS_Conv, Hybrid_FS_Conv, C2f_SCConv,
+    FS_Attention_ECA_CA, FS_Attention_ECA_SP
 )
 
 # from ultralytics.nn.modules.fire_smoke import (
@@ -1650,6 +1651,7 @@ def parse_model(d, ch, verbose=True):
             HSFPN,
             FS_Conv,
             Hybrid_FS_Conv,
+            C2f_SCConv
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1732,7 +1734,8 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f], *args]
         elif m in {EMA}:
             args = [ch[f]]
-        elif m in (SimAM, CBAM, TripletAttention, ECA, CoordAtt):
+        elif m in (SimAM, CBAM, TripletAttention, ECA,
+                   CoordAtt, FS_Attention_ECA_CA, FS_Attention_ECA_SP):
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, divisor=8)

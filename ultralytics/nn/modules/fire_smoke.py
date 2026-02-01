@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
+from .block import Bottleneck, C2f
 
 __all__ = (
     'CoordAtt','BiFPN_Concat3','BiFPN_Concat2','HSFPN',
     "BiFPN_Concat", "BiFPN", "BiFPN_Transformer", "DynamicBiFPN",
-    "FS_Conv", "Hybrid_FS_Conv",
-
+    "FS_Conv", "Hybrid_FS_Conv", "C2f_SCConv",
+    "FS_Attention_ECA_CA", "FS_Attention_ECA_SP"
 )
 #==================================================================================
 # from: https://github.com/Changping-Li/YOLOv8_BiFPN.git
@@ -42,6 +45,80 @@ class CoordAtt(nn.Module):
         a_w = self.conv_w(x_w).sigmoid()
 
         return identity * a_h * a_w
+
+class FS_Attention_ECA_SP(nn.Module):
+    """超轻量:ECA(通道) + 简化空间门控
+    结合了 全局上下文（avg + max pooling） 和 小卷积核，在几乎不增加计算量的前提下显著提升空间注意力能力
+    空间注意力应基于 整个特征图的上下文 来判断“哪里重要”，而非局部 3×3 区域。
+    全局上下文感知: avg 和 max 池化捕获整个 feature map 的统计信息
+    参数极少: 空间分支仅 2 × k × k 个参数（如 k=3 → 18 参数）
+    感受野灵活: 可通过 spatial_kernel 调整（默认 3，也可设为 5/7）
+    兼容性强: 输出形状与输入完全一致，可无缝插入任何 CNN
+    无 bias: 符合注意力模块惯例，减少冗余
+    """
+    def __init__(self, channels, gamma=2, b=1, spatial_kernel=3):
+        super().__init__()
+        # ECA: 1D conv on channel avg pool
+        t = int(abs((math.log(channels, 2) + b) / gamma))
+        k = t if t % 2 else t + 1
+        self.eca_conv = nn.Conv1d(1, 1, kernel_size=k, padding=k//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+        # 空间门控：用 depthwise conv 提取空间重要性
+        assert spatial_kernel % 2 == 1, "spatial_kernel must be odd"
+        self.spatial_conv = nn.Conv2d(
+            2, 1, kernel_size=spatial_kernel,
+            padding=spatial_kernel // 2, bias=False
+        )
+
+    def forward(self, x):
+        # ECA
+        y = F.adaptive_avg_pool2d(x, 1)               # (B, C, 1, 1)
+        y = y.squeeze(-1).transpose(-1, -2)           # (B, 1, C)
+        y = self.eca_conv(y)                          # (B, 1, C)
+        y = y.transpose(-1, -2).unsqueeze(-1)         # (B, C, 1, 1)
+        x = x * self.sigmoid(y)
+
+        # Spatial Gate
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out = torch.max(x, dim=1, keepdim=True)[0]
+        s = torch.cat([avg_out, max_out], dim=1)      # (B, 2, H, W)
+        s = self.sigmoid(self.spatial_conv(s))        # (B, 1, H, W)
+        x = x * s
+        return x
+
+class FS_Attention_ECA_CA(nn.Module):
+    """超轻量: ECA(通道) + CA(坐标) - 并行融合"""
+    def __init__(self, channels, gamma=2, b=1):
+        super().__init__()
+        # ECA部分
+        t = int(abs((math.log2(channels) + b) / gamma))
+        k = t if t % 2 else t + 1
+        self.eca_conv = nn.Conv1d(1, 1, kernel_size=k, padding=k//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+        # CA部分
+        self.ca = CoordAtt(channels)
+        # 可选的融合权重
+        self.alpha = nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, x):
+        identity = x
+
+        # 计算ECA注意力
+        y_eca = F.adaptive_avg_pool2d(x, 1)  # [B, C, 1, 1]
+        y_eca = y_eca.squeeze(-1).transpose(-1, -2)  # [B, 1, C]
+        y_eca = self.eca_conv(y_eca)  # [B, 1, C]
+        y_eca = y_eca.transpose(-1, -2).unsqueeze(-1)  # [B, C, 1, 1]
+        eca_out = self.sigmoid(y_eca)  # 确保在[0,1]
+
+        # 计算CA注意力
+        ca_out = self.ca(x)
+
+        # 3. 融合
+        out = self.alpha * eca_out + (1 - self.alpha) * ca_out
+
+        return out
+
 
 class HSFPN(nn.Module):
     def __init__(self, in_planes, ratio = 4, flag=True):
@@ -143,8 +220,6 @@ class BiFPN_Concat(nn.Module):
             weight = w / (torch.sum(w, dim=0) + self.epsilon)
             x = self.conv(self.act(weight[0] * x[0] + weight[1] * x[1] + weight[2] * x[2]))
         return x
-
-
 
 class swish(nn.Module):
     def forward(self, x):
@@ -699,6 +774,119 @@ class Hybrid_FS_Conv(nn.Module):
         # 通道注意力
         out = self.ca(out)
         return out
+
+#=====================================================================================
+# SCConv（Shifted Convolution）模块。SCConv通过对卷积操作进行优化，提升了对局部特征的学习能力，尤其适用于需要细粒度识别的目标检测任务。
+class GroupBatchnorm2d(nn.Module):
+    def __init__(self, c_num: int, group_num: int = 16, eps: float = 1e-10):
+        super(GroupBatchnorm2d, self).__init__()
+        assert c_num >= group_num
+        self.group_num = group_num
+        self.gamma = nn.Parameter(torch.randn(c_num, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(c_num, 1, 1))
+        self.eps = eps
+
+    def forward(self, x):
+        N, C, H, W = x.size()
+        x = x.view(N, self.group_num, -1)
+        mean = x.mean(dim=2, keepdim=True)
+        std = x.std(dim=2, keepdim=True)
+        x = (x - mean) / (std + self.eps)
+        x = x.view(N, C, H, W)
+        return x * self.gamma + self.beta
+
+
+class SRU(nn.Module):
+    def __init__(self, oup_channels: int, group_num: int = 16, gate_threshold: float = 0.5):
+        super().__init__()
+
+        self.gn = GroupBatchnorm2d(oup_channels, group_num=group_num)
+        self.gate_threshold = gate_threshold
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        gn_x = self.gn(x)
+        w_gamma = self.gn.gamma / sum(self.gn.gamma)
+        reweights = self.sigmoid(gn_x * w_gamma)
+
+        # Gate
+        info_mask = reweights >= self.gate_threshold
+        noninfo_mask = reweights < self.gate_threshold
+        x_1 = info_mask * x
+        x_2 = noninfo_mask * x
+        x = self.reconstruct(x_1, x_2)
+        return x
+
+    def reconstruct(self, x_1, x_2):
+        x_11, x_12 = torch.split(x_1, x_1.size(1) // 2, dim=1)
+        x_21, x_22 = torch.split(x_2, x_2.size(1) // 2, dim=1)
+        return torch.cat([x_11 + x_22, x_12 + x_21], dim=1)
+
+
+class CRU(nn.Module):
+    '''
+    alpha: 0 < alpha < 1
+    '''
+
+    def __init__(self, op_channel: int, alpha: float = 1 / 2, squeeze_ratio: int = 2,
+                 group_size: int = 2, group_kernel_size: int = 3):
+        super().__init__()
+        self.up_channel = int(alpha * op_channel)
+        self.low_channel = op_channel - self.up_channel
+        self.squeeze1 = nn.Conv2d(self.up_channel, self.up_channel // squeeze_ratio, kernel_size=1, bias=False)
+        self.squeeze2 = nn.Conv2d(self.low_channel, self.low_channel // squeeze_ratio, kernel_size=1, bias=False)
+
+        # up
+        self.GWC = nn.Conv2d(self.up_channel // squeeze_ratio, op_channel, kernel_size=group_kernel_size, stride=1,
+                             padding=group_kernel_size // 2, groups=group_size)
+        self.PWC1 = nn.Conv2d(self.up_channel // squeeze_ratio, op_channel, kernel_size=1, bias=False)
+
+        # low
+        self.PWC2 = nn.Conv2d(self.low_channel // squeeze_ratio, op_channel - self.low_channel // squeeze_ratio,
+                              kernel_size=1, bias=False)
+        self.advavg = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        # Split
+        up, low = torch.split(x, [self.up_channel, self.low_channel], dim=1)
+        up, low = self.squeeze1(up), self.squeeze2(low)
+
+        # Transform
+        Y1 = self.GWC(up) + self.PWC1(up)
+        Y2 = torch.cat([self.PWC2(low), low], dim=1)
+
+        # Fuse
+        out = torch.cat([Y1, Y2], dim=1)
+        out = F.softmax(self.advavg(out), dim=1) * out
+        out1, out2 = torch.split(out, out.size(1) // 2, dim=1)
+        return out1 + out2
+
+class SCConv(nn.Module):
+    # https://github.com/cheng-haha/ScConv/blob/main/ScConv.py
+    def __init__(self, op_channel: int, group_num: int = 16, gate_threshold: float = 0.5,
+                 alpha: float = 1 / 2, squeeze_ratio: int = 2, group_size: int = 2,
+                 group_kernel_size: int = 3):
+        super().__init__()
+        self.SRU = SRU(op_channel, group_num=group_num, gate_threshold=gate_threshold)
+        self.CRU = CRU(op_channel, alpha=alpha, squeeze_ratio=squeeze_ratio,
+                       group_size=group_size, group_kernel_size=group_kernel_size)
+
+    def forward(self, x):
+        x = self.SRU(x)
+        x = self.CRU(x)
+        return x
+
+class Bottleneck_SCConv(Bottleneck):
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = SCConv(c2)
+
+class C2f_SCConv(C2f):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.m = nn.ModuleList(Bottleneck_SCConv(self.c, self.c, shortcut, g, k=(3, 3), e=1.0) for _ in range(n))
 
 
 # === Minimal test snippet (only runs if file executed directly) ===
